@@ -39,6 +39,15 @@ STREAM_MAX_LENGTH = 28
 ROWS_PER_SECOND = 12.5
 PREVIEW_SYNC_INTERVAL = 500
 SECONDS_PER_DAY = 86400
+WEEKDAYS = (
+    ("MONDAY", "星期一"),
+    ("TUESDAY", "星期二"),
+    ("WEDNESDAY", "星期三"),
+    ("THURSDAY", "星期四"),
+    ("FRIDAY", "星期五"),
+    ("SATURDAY", "星期六"),
+    ("SUNDAY", "星期日"),
+)
 
 
 def get_logger():
@@ -110,6 +119,7 @@ class MatrixDashboard(QWidget):
         self.stream_chars = []
         self.last_mouse_position = None
         self.info_time = ""
+        self.info_weekday = ""
         self.info_progress = 0.0
         self.last_info_update = 0.0
         self.elapsed_timer = QElapsedTimer()
@@ -189,8 +199,10 @@ class MatrixDashboard(QWidget):
 
     def refresh_info(self):
         """Refresh low-frequency dashboard data once per second."""
-        self.info_time = time.strftime("TIME: %Y-%m-%d %H:%M:%S")
         now = time.localtime()
+        weekday_en, weekday_zh = WEEKDAYS[now.tm_wday]
+        self.info_time = time.strftime("TIME: %Y-%m-%d %H:%M:%S", now)
+        self.info_weekday = f"{weekday_en} · {weekday_zh}"
         self.info_progress = (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) / SECONDS_PER_DAY
         self.last_info_update = time.monotonic()
 
@@ -242,7 +254,7 @@ class MatrixDashboard(QWidget):
         """Draw the responsive dashboard and clip long todo text to its cell."""
         scale = self.layout_scale()
         panel_width = min(self.width() * 0.88, 720 * scale)
-        panel_height = min(self.height() * 0.76, max(300 * scale, (170 + len(self.config.todos) * 30) * scale))
+        panel_height = min(self.height() * 0.76, max(330 * scale, (200 + len(self.config.todos) * 30) * scale))
         panel = QRectF((self.width() - panel_width) / 2, (self.height() - panel_height) / 2, panel_width, panel_height)
         margin = max(16, 32 * scale)
         painter.setPen(QPen(self.green, max(1, round(2 * scale))))
@@ -257,8 +269,14 @@ class MatrixDashboard(QWidget):
         painter.setFont(self.time_font)
         painter.drawText(QRectF(panel.left() + margin, panel.top() + 58 * scale, panel.width() - margin * 2, 28 * scale), Qt.AlignCenter, self.info_time)
 
+        # Keep the weekday on its own line so the date and time remain readable.
         painter.setFont(self.progress_font)
-        progress_y = panel.top() + 102 * scale
+        weekday_rect = QRectF(panel.left() + margin, panel.top() + 86 * scale,
+                              panel.width() - margin * 2, 22 * scale)
+        painter.drawText(weekday_rect, Qt.AlignCenter, self.info_weekday)
+
+        painter.setFont(self.progress_font)
+        progress_y = panel.top() + 124 * scale
         content_width = panel.width() - margin * 2
         label_width = 110 * scale
         percent_width = 78 * scale
@@ -276,7 +294,7 @@ class MatrixDashboard(QWidget):
         painter.setPen(self.green)
         painter.drawText(percent_rect, Qt.AlignVCenter | Qt.AlignRight, f"{self.info_progress * 100:.2f}%")
 
-        divider_y = panel.top() + 142 * scale
+        divider_y = panel.top() + 164 * scale
         painter.setPen(QPen(self.green, 1, Qt.DashLine))
         painter.drawLine(panel.left() + margin, divider_y, panel.right() - margin, divider_y)
         painter.setPen(self.green)
