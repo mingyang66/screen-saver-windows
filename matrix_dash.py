@@ -6,6 +6,7 @@ import sys
 import time
 from ctypes import wintypes
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, QTimer, Qt
@@ -27,8 +28,21 @@ APP_DIR = Path.home() / "AppData" / "Roaming" / "MatrixDashboard"
 CONFIG_PATH = APP_DIR / "config.json"
 LOG_PATH = APP_DIR / "matrix_dash.log"
 
+# Centralized animation and layout parameters keep the paint loop readable.
+MATRIX_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+MIN_SCALE = 0.65
+MAX_SCALE = 1.35
+BASE_WIDTH = 1920
+BASE_HEIGHT = 1080
+STREAM_MIN_LENGTH = 8
+STREAM_MAX_LENGTH = 28
+ROWS_PER_SECOND = 12.5
+PREVIEW_SYNC_INTERVAL = 500
+SECONDS_PER_DAY = 86400
+
 
 def get_logger():
+    """Create the application logger once and keep runtime files out of the repo."""
     APP_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("matrix_dashboard")
     if not logger.handlers:
@@ -55,6 +69,7 @@ class AppConfig:
 
     @classmethod
     def load(cls):
+        """Load user settings while keeping safe bounds for every editable value."""
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             return cls(
@@ -69,16 +84,20 @@ class AppConfig:
             return cls()
 
     def save(self):
+        """Persist the validated configuration in the user's application data folder."""
         APP_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+@lru_cache(maxsize=None)
 def font_family(preferred, fallback):
+    """Return the preferred installed font, or its fallback."""
     families = set(QFontDatabase.families())
     return preferred if preferred in families else fallback
 
 
 class MatrixDashboard(QWidget):
+    """Full-screen dashboard or an embedded Windows screen-saver preview."""
     def __init__(self, config, preview=False, screen=None, preview_handle=None):
         super().__init__()
         self.config = config
@@ -96,7 +115,7 @@ class MatrixDashboard(QWidget):
         self.elapsed_timer = QElapsedTimer()
         self.elapsed_timer.start()
 
-        self.matrix_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        self.matrix_chars = MATRIX_CHARS
         self.matrix_font = QFont(font_family("Consolas", "Courier New"), self.cell_size)
         self.title_font = QFont(font_family("Consolas", "Courier New"), 24, QFont.Bold)
         self.time_font = QFont(font_family("Consolas", "Courier New"), 14)
@@ -117,7 +136,7 @@ class MatrixDashboard(QWidget):
         if self.preview:
             self.preview_timer = QTimer(self)
             self.preview_timer.timeout.connect(self.sync_preview)
-            self.preview_timer.start(500)
+            self.preview_timer.start(PREVIEW_SYNC_INTERVAL)
 
         self.setWindowTitle("Matrix Dashboard")
         self.setWindowFlag(Qt.FramelessWindowHint)
@@ -128,16 +147,15 @@ class MatrixDashboard(QWidget):
             self.setCursor(Qt.BlankCursor)
 
     def resizeEvent(self, event):
+        """Resize columns without resetting the existing streams."""
         self.update_fonts()
         columns = max(1, self.width() // self.cell_size + 1)
         if len(self.drops) < columns:
             count = columns - len(self.drops)
             self.drops.extend(random.randint(-self.height() // self.cell_size, 0) for _ in range(count))
-            lengths = [random.randint(8, 28) for _ in range(count)]
+            lengths = [random.randint(STREAM_MIN_LENGTH, STREAM_MAX_LENGTH) for _ in range(count)]
             self.stream_lengths.extend(lengths)
-            self.stream_chars.extend(
-                [[random.choice(self.matrix_chars) for _ in range(length)] for length in lengths]
-            )
+            self.stream_chars.extend(self.create_stream(length) for length in lengths)
         elif len(self.drops) > columns:
             del self.drops[columns:]
             del self.stream_lengths[columns:]
@@ -145,7 +163,7 @@ class MatrixDashboard(QWidget):
         super().resizeEvent(event)
 
     def update_fonts(self):
-        scale = max(0.65, min(min(self.width() / 1920, self.height() / 1080), 1.35))
+        scale = self.layout_scale()
         self.cell_size = max(10, round(self.config.font_size * scale))
         self.matrix_font.setPointSize(self.cell_size)
         self.title_font.setPointSize(max(15, round(24 * scale)))
@@ -155,27 +173,40 @@ class MatrixDashboard(QWidget):
         self.footer_font.setPointSize(max(7, round(10 * scale)))
 
     def advance_animation(self):
+        """Advance the animation according to elapsed time, not timer frequency."""
         elapsed = min(self.elapsed_timer.restart() / 1000.0, 0.25)
-        rows_per_second = 12.5
         for column, drop in enumerate(self.drops):
             if drop * self.cell_size > self.height() + self.stream_lengths[column] * self.cell_size and random.random() > 0.975:
                 self.drops[column] = random.randint(-20, 0)
-                self.stream_lengths[column] = random.randint(8, 28)
-                self.stream_chars[column] = [random.choice(self.matrix_chars) for _ in range(self.stream_lengths[column])]
+                self.stream_lengths[column] = random.randint(STREAM_MIN_LENGTH, STREAM_MAX_LENGTH)
+                self.stream_chars[column] = self.create_stream(self.stream_lengths[column])
             else:
-                self.drops[column] += rows_per_second * elapsed
+                self.drops[column] += ROWS_PER_SECOND * elapsed
                 self.stream_chars[column][0] = random.choice(self.matrix_chars)
         if time.monotonic() - self.last_info_update >= 1:
             self.refresh_info()
         self.update()
 
     def refresh_info(self):
+        """Refresh low-frequency dashboard data once per second."""
         self.info_time = time.strftime("TIME: %Y-%m-%d %H:%M:%S")
         now = time.localtime()
-        self.info_progress = (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) / 86400
+        self.info_progress = (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) / SECONDS_PER_DAY
         self.last_info_update = time.monotonic()
 
+    def create_stream(self, length):
+        """Create one cached stream; animation frames only change its head."""
+        return [random.choice(self.matrix_chars) for _ in range(length)]
+
+    def layout_scale(self):
+        """Calculate a bounded scale from the 1920x1080 reference layout."""
+        return max(
+            MIN_SCALE,
+            min(min(self.width() / BASE_WIDTH, self.height() / BASE_HEIGHT), MAX_SCALE),
+        )
+
     def keyPressEvent(self, event):
+        # Screen-saver mode exits on input; preview mode belongs to the host dialog.
         if not self.preview:
             self.close()
 
@@ -197,6 +228,7 @@ class MatrixDashboard(QWidget):
         return super().event(event)
 
     def draw_matrix(self, painter):
+        """Draw cached characters and avoid regenerating complete streams."""
         painter.setFont(self.matrix_font)
         for column, drop in enumerate(self.drops):
             x = column * self.cell_size
@@ -207,7 +239,8 @@ class MatrixDashboard(QWidget):
                     painter.drawText(QPointF(x, y), character)
 
     def draw_dashboard(self, painter):
-        scale = max(0.65, min(min(self.width() / 1920, self.height() / 1080), 1.35))
+        """Draw the responsive dashboard and clip long todo text to its cell."""
+        scale = self.layout_scale()
         panel_width = min(self.width() * 0.88, 720 * scale)
         panel_height = min(self.height() * 0.76, max(300 * scale, (170 + len(self.config.todos) * 30) * scale))
         panel = QRectF((self.width() - panel_width) / 2, (self.height() - panel_height) / 2, panel_width, panel_height)
@@ -259,6 +292,7 @@ class MatrixDashboard(QWidget):
         painter.drawText(footer_rect, Qt.AlignCenter, "PRESS ANY KEY TO EXIT")
 
     def sync_preview(self):
+        """Keep the embedded child aligned with the host preview client area."""
         if self.preview_handle:
             rect = get_preview_rect(self.preview_handle)
             if rect:
@@ -274,6 +308,7 @@ class MatrixDashboard(QWidget):
 
 
 def get_preview_rect(handle):
+    """Return the preview host's client size, or None when its HWND is gone."""
     user32 = ctypes.windll.user32
     rect = wintypes.RECT()
     if not user32.IsWindow(handle) or not user32.GetClientRect(handle, ctypes.byref(rect)):
@@ -282,6 +317,7 @@ def get_preview_rect(handle):
 
 
 def embed_in_preview(window, preview_handle):
+    """Convert the Qt top-level window into a child of Windows' preview host."""
     if not get_preview_rect(preview_handle):
         return False
     user32 = ctypes.windll.user32
@@ -299,6 +335,7 @@ def embed_in_preview(window, preview_handle):
 
 
 class ConfigDialog(QDialog):
+    """Small configuration UI used by the Windows screen-saver /c entry point."""
     def __init__(self, config):
         super().__init__()
         self.setWindowTitle("Matrix Dashboard Settings")
@@ -328,6 +365,7 @@ class ConfigDialog(QDialog):
 
 
 def run_screensaver(app, config):
+    """Create one independent full-screen window per available display."""
     windows = []
     for screen in app.screens():
         window = MatrixDashboard(config, screen=screen)
@@ -338,6 +376,7 @@ def run_screensaver(app, config):
 
 
 def main():
+    """Dispatch Windows screen-saver modes without changing their argument contract."""
     args = sys.argv[1:]
     mode = args[0].lower() if args else "/s"
     app = QApplication(sys.argv)
