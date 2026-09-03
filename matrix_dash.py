@@ -1,138 +1,150 @@
-import tkinter as tk
 import random
+import sys
 import time
 
-class MatrixDashboard:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Matrix Dashboard")
-        
-        # 1. 窗口全屏与全黑设置
-        self.width = self.root.winfo_screenwidth()
-        self.height = self.root.winfo_screenheight()
-        self.root.geometry(f"{self.width}x{self.height}+0+0")
-        self.root.attributes("-fullscreen", True)
-        self.root.configure(bg="black")
-        
-        # 2. 画布与基础配置
-        self.canvas = tk.Canvas(root, width=self.width, height=self.height, bg="black", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        
+from PySide6.QtCore import QEvent, QPointF, QTimer, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtWidgets import QApplication, QWidget
+
+
+class MatrixDashboard(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Matrix Dashboard")
+        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setCursor(Qt.BlankCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+
         self.font_size = 16
-        self.columns = int(self.width / self.font_size)
-        self.drops = [random.randint(-self.height // self.font_size, 0) for _ in range(self.columns)]
-        self.stream_lengths = [random.randint(8, 28) for _ in range(self.columns)]
         self.matrix_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-        self.matrix_font = ("MS Gothic", self.font_size)
-        self.title_font = ("Consolas", 24, "bold")
-        self.time_font = ("Consolas", 14)
-        self.progress_font = ("Consolas", 12)
-        self.todo_font = ("Microsoft YaHei", 12)
-        self.footer_font = ("Consolas", 10)
-        self.background_color = "#000000"
-        self.green_color = "#00FF00"
-        self.highlight_color = "#FFFFFF"
-        
-        # 3. 动态配置区（在这里可以修改你的看板内容）
+        self.drops = []
+        self.stream_lengths = []
+        self.last_mouse_position = None
         self.title_text = "SYSTEM DASHBOARD"
         self.todo_list = [
             "1. 深度优化底层算力模型 (开会摸鱼)",
             "2. 清理系统多余缓存数据 (倒杯咖啡)",
-            "3. 部署自动化运行脚本 (准备下班)"
+            "3. 部署自动化运行脚本 (准备下班)",
         ]
-        
-        # 4. 键盘绑定：按 Esc 退出
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
-        
-        # 5. 启动循环
-        self.run()
 
-    def get_time_progress(self):
-        """计算今天的时间进度条"""
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self.update)
+        self.animation_timer.start(80)
+
+        self.clock_timer = QTimer(self)
+        self.clock_timer.timeout.connect(self.update)
+        self.clock_timer.start(1000)
+
+        # Set up all state before showing the window; showFullScreen can emit resizeEvent.
+        self.showFullScreen()
+
+    def resizeEvent(self, event):
+        columns = max(1, self.width() // self.font_size + 1)
+        self.drops = [random.randint(-self.height() // self.font_size, 0) for _ in range(columns)]
+        self.stream_lengths = [random.randint(8, 28) for _ in range(columns)]
+        super().resizeEvent(event)
+
+    def keyPressEvent(self, event):
+        self.close()
+
+    def mousePressEvent(self, event):
+        self.close()
+
+    def mouseMoveEvent(self, event):
+        position = event.position().toPoint()
+        if self.last_mouse_position is not None and position != self.last_mouse_position:
+            self.close()
+        self.last_mouse_position = position
+
+    def event(self, event):
+        if event.type() == QEvent.WindowDeactivate:
+            self.close()
+        return super().event(event)
+
+    def day_progress(self):
         now = time.localtime()
-        passed_seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
-        total_seconds = 24 * 3600
-        percent = passed_seconds / total_seconds
-        
-        # 生成进度条视觉效果
-        bar_length = 20
-        filled_length = int(bar_length * percent)
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
-        return f"DAY PROGRESS: [{bar}] {percent*100:.2f}%"
+        seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+        return seconds / (24 * 60 * 60)
 
-    def draw_matrix(self):
-        """绘制黑客帝国数字雨底色"""
-        # 使用半透明黑色层覆盖，产生字符拖尾淡出效果
-        # 由于 Tkinter 限制，用多次快速刷新模拟淡化
-        self.canvas.create_rectangle(0, 0, self.width, self.height, fill=self.background_color, stipple="gray12")
-        
-        for i in range(len(self.drops)):
-            x = i * self.font_size
-
-            for offset in range(self.stream_lengths[i]):
-                row = self.drops[i] - offset
+    def draw_matrix(self, painter):
+        painter.setFont(QFont("Consolas", self.font_size))
+        for column, drop in enumerate(self.drops):
+            x = column * self.font_size
+            for offset in range(self.stream_lengths[column]):
+                row = drop - offset
                 y = row * self.font_size
-                if y < -self.font_size or y > self.height:
-                    continue
+                if -self.font_size <= y <= self.height():
+                    painter.setPen(QColor("#FFFFFF" if offset == 0 else "#00FF00"))
+                    painter.drawText(QPointF(x, y), random.choice(self.matrix_chars))
 
-                # 每列绘制一段字符流，最前端字符使用高亮色
-                color = self.highlight_color if offset == 0 else self.green_color
-                self.canvas.create_text(
-                    x,
-                    y,
-                    text=random.choice(self.matrix_chars),
-                    fill=color,
-                    font=self.matrix_font,
-                    anchor="nw",
-                )
-
-            if self.drops[i] * self.font_size > self.height and random.random() > 0.975:
-                self.drops[i] = random.randint(-20, 0)
-                self.stream_lengths[i] = random.randint(8, 28)
+            if drop * self.font_size > self.height() and random.random() > 0.975:
+                self.drops[column] = random.randint(-20, 0)
+                self.stream_lengths[column] = random.randint(8, 28)
             else:
-                self.drops[i] += 1
+                self.drops[column] += 1
 
-    def draw_dashboard(self):
-        """在屏幕中央渲染高清核心数据面板"""
-        cx = self.width // 2
-        cy = self.height // 2
-        
-        # 绘制半透明黑色背景板
-        pad_w, pad_h = 280, 160
-        self.canvas.create_rectangle(cx - pad_w, cy - pad_h, cx + pad_w, cy + pad_h, fill=self.background_color, outline=self.green_color, width=2)
-        
-        # 1. 标题
-        self.canvas.create_text(cx, cy - 120, text=self.title_text, fill=self.green_color, font=self.title_font)
-        
-        # 2. 实时系统时间
-        current_time = time.strftime("TIME: %Y-%m-%d %H:%M:%S", time.localtime())
-        self.canvas.create_text(cx, cy - 70, text=current_time, fill=self.green_color, font=self.time_font)
-        
-        # 3. 今日进度条
-        progress_str = self.get_time_progress()
-        self.canvas.create_text(cx, cy - 35, text=progress_str, fill=self.green_color, font=self.progress_font)
-        
-        # 4. 任务线
-        self.canvas.create_line(cx - 240, cy, cx + 240, cy, fill=self.green_color, dash=(4, 4))
-        
-        # 5. 今日待办事项
-        start_y = cy + 25
-        for item in self.todo_list:
-            self.canvas.create_text(cx - 230, start_y, text=item, fill=self.green_color, font=self.todo_font, anchor="w")
-            start_y += 30
-            
-        # 底部提示
-        self.canvas.create_text(cx, cy + 140, text="PRESS [ESC] TO EXIT SYSTEM", fill=self.green_color, font=self.footer_font)
+    def draw_dashboard(self, painter):
+        cx, cy = self.width() // 2, self.height() // 2
+        green = QColor("#00FF00")
+        painter.setPen(QPen(green, 2))
+        painter.setBrush(QColor(0, 0, 0, 220))
+        painter.drawRect(cx - 280, cy - 160, 560, 320)
 
-    def run(self):
-        """动画主循环"""
-        self.canvas.delete("all")
-        self.draw_matrix()
-        self.draw_dashboard()
-        # 约每 80 毫秒刷新一次屏幕，使数字雨下落更流畅
-        self.root.after(80, self.run)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(green)
+        painter.setFont(QFont("Consolas", 24, QFont.Bold))
+        painter.drawText(QPointF(cx - 150, cy - 120), self.title_text)
+
+        painter.setFont(QFont("Consolas", 14))
+        painter.drawText(QPointF(cx - 150, cy - 70), time.strftime("TIME: %Y-%m-%d %H:%M:%S"))
+
+        painter.setFont(QFont("Consolas", 12))
+        progress = self.day_progress()
+        painter.setPen(green)
+        painter.drawText(QPointF(cx - 230, cy - 35), "DAY PROGRESS")
+
+        # Draw a geometric bar instead of block characters, whose glyph heights
+        # can differ between installed fonts.
+        bar_x, bar_y, bar_width, bar_height = cx - 120, cy - 49, 260, 16
+        painter.setPen(QPen(QColor("#006600"), 1))
+        painter.setBrush(QColor("#001A00"))
+        painter.drawRect(bar_x, bar_y, bar_width, bar_height)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(green)
+        painter.drawRect(bar_x + 1, bar_y + 1, max(0, int((bar_width - 2) * progress)), bar_height - 2)
+
+        painter.setPen(green)
+        painter.drawText(QPointF(cx + 150, cy - 35), f"{progress * 100:.2f}%")
+
+        painter.setPen(QPen(green, 1, Qt.DashLine))
+        painter.drawLine(cx - 240, cy, cx + 240, cy)
+        painter.setPen(green)
+        painter.setFont(QFont("Microsoft YaHei", 12))
+        for index, item in enumerate(self.todo_list):
+            painter.drawText(QPointF(cx - 230, cy + 55 + index * 30), item)
+
+        painter.setFont(QFont("Consolas", 10))
+        painter.drawText(QPointF(cx - 120, cy + 140), "PRESS ANY KEY TO EXIT")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.fillRect(self.rect(), QColor("#000000"))
+        self.draw_matrix(painter)
+        self.draw_dashboard(painter)
+        painter.end()
+
+
+def main():
+    argument = sys.argv[1].lower() if len(sys.argv) > 1 else "/s"
+    if argument not in ("/s", "/c") and not argument.startswith("/p"):
+        return 0
+
+    app = QApplication(sys.argv)
+    window = MatrixDashboard()
+    window.show()
+    return app.exec()
+
 
 if __name__ == "__main__":
-    app_root = tk.Tk()
-    dashboard = MatrixDashboard(app_root)
-    app_root.mainloop()
+    raise SystemExit(main())
